@@ -41,7 +41,7 @@ def run_eval(
 
     get_answers_func = get_model_answers
 
-    chunk_size = len(questions) // (num_gpus_total // num_gpus_per_model) // 2
+    chunk_size = len(questions)
     ans_handles = []
     for i in range(0, len(questions), chunk_size):
         ans_handles.append(
