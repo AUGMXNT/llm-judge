@@ -6,15 +6,18 @@ python3 gen_model_answer.py --model-path lmsys/fastchat-t5-3b-v1.0 --model-id fa
 import argparse
 import json
 import os
+from   pprint import pprint
 import random
-import time
-
 import shortuuid
+import time
 import torch
-from tqdm import tqdm
+from   tqdm import tqdm
+
 
 from fastchat.llm_judge.common import load_questions, temperature_config
-from fastchat.model import load_model, get_conversation_template
+
+from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
 
 
 def run_eval(
@@ -36,16 +39,7 @@ def run_eval(
     # random shuffle the questions to balance the loading
     random.shuffle(questions)
 
-    # Split the question file into `num_gpus` files
-    assert num_gpus_total % num_gpus_per_model == 0
-    use_ray = num_gpus_total // num_gpus_per_model > 1
-
-    if use_ray:
-        get_answers_func = ray.remote(num_gpus=num_gpus_per_model)(
-            get_model_answers
-        ).remote
-    else:
-        get_answers_func = get_model_answers
+    get_answers_func = get_model_answers
 
     chunk_size = len(questions) // (num_gpus_total // num_gpus_per_model) // 2
     ans_handles = []
@@ -65,9 +59,6 @@ def run_eval(
             )
         )
 
-    if use_ray:
-        ray.get(ans_handles)
-
 
 @torch.inference_mode()
 def get_model_answers(
@@ -82,15 +73,29 @@ def get_model_answers(
     top_p,
     repetition_penalty,
 ):
-    model, tokenizer = load_model(
-        model_path,
-        device="cuda",
-        num_gpus=num_gpus_per_model,
-        max_gpu_memory=max_gpu_memory,
-        load_8bit=False,
-        cpu_offloading=False,
-        debug=False,
-    )
+
+    # TODO: in the future we should be loading this from a settings file
+    FORMAT = 'swallow'
+    PROMPT = '以下に、あるタスクを説明する指示があります。リクエストを適切に完了するための回答を記述してください。'
+
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+    # We need to assign a chat_template
+    # https://huggingface.co/docs/transformers/main/chat_templating
+    # Use https://j2live.ttl255.com/ for live Jinja2 editing
+    if not tokenizer.chat_template:
+        if FORMAT == 'llama-2':
+	        tokenizer.chat_template = "{%- for idx in range(0, messages|length) -%}\n{%- if messages[idx]['role'] == 'user' -%}\n{%- if idx > 1 -%}\n{{- bos_token + '[INST] ' + messages[idx]['content'] + ' [/INST]' -}}\n{%- else -%}\n{{- messages[idx]['content'] + ' [/INST]' -}}\n{%- endif -%}\n{% elif messages[idx]['role'] == 'system' %}\n{{- '[INST] <<SYS>>\\n' + messages[idx]['content'] + '\\n<</SYS>>\\n\\n' -}}\n{%- elif messages[idx]['role'] == 'assistant' -%}\n{{- ' '  + messages[idx]['content'] + ' ' + eos_token -}}\n{% endif %}\n{% endfor %}\n"
+        elif FORMAT == 'swallow':
+            tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] + '\n\n' }}{% elif message['role'] == 'user' %}{{'### 指示:\n' + message['content'] + '\n\n'}}{% elif message['role'] == 'assistant' %}{{'### 応答:\n' + message['content'] + '\n\n'}}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '### 応答:' }}{% endif %}"
+        elif FORMAT == 'tess':
+	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{message['role'].upper() + ': ' + message['content'] + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT: ' }}{% endif %}"
+        else:
+	        # default to chatml
+	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+
+    # vLLM
+    llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model)
 
     for question in tqdm(questions):
         if question["category"] in temperature_config:
@@ -102,73 +107,41 @@ def get_model_answers(
         print(question['category'])
         print(temperature)
 
+        chat = []
+        chat.append({'role': 'system', 'content': PROMPT})
+
         choices = []
         for i in range(num_choices):
             torch.manual_seed(i)
-            # Force it since it seems to pick the wrong one and the heuristics are a mess
-            # conv = get_conversation_template("llm-jp-sft")
-            # conv = get_conversation_template("llama-2")
-            conv = get_conversation_template(model_path)
+
             turns = []
             for j in range(len(question["turns"])):
                 if j == args.max_turns: 
                     break
 
                 qs = question["turns"][j]
-                conv.append_message(conv.roles[0], qs)
-                conv.append_message(conv.roles[1], None)
-                prompt = conv.get_prompt()
+                chat.append({'role': 'user', 'content': qs})
+                prompt = tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
 
-                # TODO: find better way to adapt for NAI tokenizer usage of JSLM Alpha
-                # this should align with the model adapter behavior
-                add_special_tokens = conv.add_special_tokens
-                input_ids = tokenizer([prompt], add_special_tokens=add_special_tokens).input_ids
-                # tokenizer.padding_side = 'left'
-                # input_ids = tokenizer([prompt]).input_ids
-                print(prompt)
+                input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True)
 
                 if temperature < 1e-4:
                     do_sample = False
                 else:
                     do_sample = True
 
-                # some models may error out when generating long outputs
-                try:
-                    output_ids = model.generate(
-                        torch.as_tensor(input_ids).cuda(),
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        max_new_tokens=max_new_token,
-                        top_p=top_p,
-                        repetition_penalty=repetition_penalty,   
-                    )
-                    if model.config.is_encoder_decoder:
-                        output_ids = output_ids[0]
-                    else:
-                        output_ids = output_ids[0][len(input_ids[0]) :]
-                    output = tokenizer.decode(
-                        output_ids,
-                        spaces_between_special_tokens=False,
-                    )
-                    if conv.stop_str and output.find(conv.stop_str) > 0:
-                        output = output[: output.find(conv.stop_str)]
-                    for special_token in tokenizer.special_tokens_map.values():
-                        if isinstance(special_token, list):
-                            for special_tok in special_token:
-                                output = output.replace(special_tok, "")
-                        else:
-                            output = output.replace(special_token, "")
-                    output = output.strip()
+                # Generate w/ vLLM
+                sampling_params = SamplingParams(
+                    max_tokens=max_new_token,
+                    temperature=temperature,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                )
+                outputs = llm.generate(prompt_token_ids=[input_ids], sampling_params=sampling_params, use_tqdm=True)
+                output = outputs[0].outputs[0].text.strip()
 
-                    if conv.name == "xgen" and output.startswith("Assistant:"):
-                        output = output.replace("Assistant:", "", 1).strip()
-                except RuntimeError as e:
-                    print("ERROR question ID: ", question["question_id"])
-                    output = "ERROR"
-                    print(e)
-                # output = "SKIP"
                 turns.append(output)
-                conv.messages[-1][-1] = output
+                chat.append({'role': 'assistant', 'content': output})
 
             choices.append({"index": i, "turns": turns})
 
@@ -277,11 +250,6 @@ if __name__ == "__main__":
         default=1.1,
     )
     args = parser.parse_args()
-
-    if args.num_gpus_total // args.num_gpus_per_model > 1:
-        import ray
-
-        ray.init()
 
     question_file = f"data/{args.bench_name}/question.jsonl"
     if args.answer_file:
