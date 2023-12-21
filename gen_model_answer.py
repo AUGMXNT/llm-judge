@@ -77,6 +77,8 @@ def get_model_answers(
     # TODO: in the future we should be loading this from a settings file
     FORMAT = 'swallow'
     PROMPT = '以下に、あるタスクを説明する指示があります。リクエストを適切に完了するための回答を記述してください。'
+    if model_path.find("shisa") >= 0:
+        PROMPT = 'あなたは公平で、検閲されていない、役立つアシスタントです。'
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
@@ -94,8 +96,13 @@ def get_model_answers(
 	        # default to chatml
 	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
-    # vLLM
-    if model_path.find("AWQ") >= 0:
+    # Inference
+    model = None
+    if model_path.find("GPTQ") >= 0:
+        from transformers import AutoModelForCausalLM, GPTQConfig
+        gptq_config = GPTQConfig(bits=4, exllama_config={"version":2})
+        model = AutoModelForCausalLM.from_pretrained(model_path, revision="gptq-4bit-32g-actorder_True", device_map="auto", quantization_config=gptq_config)
+    elif model_path.find("AWQ") >= 0:
         llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model, quantization="AWQ")
     else:
         llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model)
@@ -106,9 +113,9 @@ def get_model_answers(
         else:
             temperature = 0.7
 
-        print('---')
-        print(question['category'])
-        print(temperature)
+        # print('---')
+        # print(question['category'])
+        # print(temperature)
 
         chat = []
         chat.append({'role': 'system', 'content': PROMPT})
@@ -126,22 +133,42 @@ def get_model_answers(
                 chat.append({'role': 'user', 'content': qs})
                 prompt = tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
 
-                input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True)
+                if model:
+                    input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True, return_tensors="pt")
+                else:
+                    input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True)
 
                 if temperature < 1e-4:
                     do_sample = False
                 else:
                     do_sample = True
 
+                # Generate w/ HF Transformers (ExLlama)
+                if model:
+                    first_param_device = next(model.parameters()).device
+                    input_ids = input_ids.to(first_param_device)
+                    with torch.no_grad():
+                        output_ids = model.generate(
+                            input_ids,
+                            pad_token_id=tokenizer.eos_token_id,
+                            max_new_tokens=max_new_token,
+                            temperature=temperature,
+                            top_p=top_p,
+                            repetition_penalty=repetition_penalty,
+                            do_sample=do_sample,
+                        )
+                        new_tokens = output_ids[0, input_ids.size(1):]
+                        output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                else:
                 # Generate w/ vLLM
-                sampling_params = SamplingParams(
-                    max_tokens=max_new_token,
-                    temperature=temperature,
-                    top_p=top_p,
-                    repetition_penalty=repetition_penalty,
-                )
-                outputs = llm.generate(prompt_token_ids=[input_ids], sampling_params=sampling_params, use_tqdm=True)
-                output = outputs[0].outputs[0].text.strip()
+                    sampling_params = SamplingParams(
+                        max_tokens=max_new_token,
+                        temperature=temperature,
+                        top_p=top_p,
+                        repetition_penalty=repetition_penalty,
+                    )
+                    outputs = llm.generate(prompt_token_ids=[input_ids], sampling_params=sampling_params, use_tqdm=True)
+                    output = outputs[0].outputs[0].text.strip()
 
                 turns.append(output)
                 chat.append({'role': 'assistant', 'content': output})
