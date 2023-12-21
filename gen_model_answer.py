@@ -167,7 +167,7 @@ def get_model_answers(
                         top_p=top_p,
                         repetition_penalty=repetition_penalty,
                     )
-                    outputs = llm.generate(prompt_token_ids=[input_ids], sampling_params=sampling_params, use_tqdm=True)
+                    outputs = llm.generate(prompt_token_ids=[input_ids], sampling_params=sampling_params, use_tqdm=False)
                     output = outputs[0].outputs[0].text.strip()
 
                 turns.append(output)

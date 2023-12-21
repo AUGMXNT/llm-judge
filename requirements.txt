@@ -1,0 +1,9 @@
+vllm
+accelerate
+fschat
+openai
+anthropic
+autoawq
+exllamav2
+auto-gptq
+optimum
