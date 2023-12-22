@@ -13,6 +13,15 @@ We use `mamba` ([install instructions](https://github.com/conda-forge/miniforge?
 mamba create -n llm-judge python=3.11
 git clone https://github.com/AUGMXNT/llm-judge
 cd llm-judge
+
+# We 
+pip install -r requirements.qwen.txt
+```
+
+For Qwen
+```
+pip install -r
+pip install csrc/layer_norm
 ```
 
 ## TODO
@@ -42,7 +51,7 @@ We can easily batch the choices together (but maybe shouldn't for seeding purpos
 A real PITA which we don't need.
 
 Better UI
-[ ] InquirerPy
+[ ] InquirerPy - anything missing, let you pick, generate cmd-line for batching or run
 [ ] Add Config Files
 [ ] Look at https://github.com/AUGMXNT/gpt4-autoeval
 [ ] Run logging

@@ -17,4 +17,5 @@
 # time python gen_model_answer.py --bench-name japanese_mt_bench --num-choices 4 --max-turns 1 --model-path TheBloke/shisa-7B-v1-AWQ --model-id shisa-7B-v1-AWQ --num-gpus-total 2 --num-gpus-per-model 2
 # time python gen_model_answer.py --bench-name japanese_mt_bench --num-choices 4 --max-turns 1 --model-path /models/llm/gptq/TheBloke_Swallow-70B-instruct-GPTQ --model-id Swallow-70b-instruct-GPTQ --num-gpus-total 2 --num-gpus-per-model 2
 # time python gen_model_answer.py --bench-name japanese_mt_bench --num-choices 4 --max-turns 1 --model-path /models/llm/gptq/TheBloke_Xwin-LM-70B-V0.1-GPTQ --model-id Xwin-LM-70B-V0.1-GPTQ --num-gpus-total 2 --num-gpus-per-model 2
+# time python gen_model_answer.py --bench-name japanese_mt_bench --num-choices 4 --max-turns 1 --model-path Qwen/Qwen-72b-Chat --model-id Qwen-72b-Chat --num-gpus-total 4 --num-gpus-per-model 4
 time python gen_model_answer.py --bench-name japanese_mt_bench --num-choices 4 --max-turns 1 --model-path rinna/nekomata-14b-instruction --model-id nekomata-14b-instruction --num-gpus-total 2 --num-gpus-per-model 2

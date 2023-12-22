@@ -6,6 +6,7 @@ autoawq
 exllamav2
 auto-gptq
 optimum
+bitsandbytes
 
 # Judging
 openai

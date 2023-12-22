@@ -75,13 +75,22 @@ def get_model_answers(
 ):
 
     # TODO: in the future we should be loading this from a settings file
-    FORMAT = 'swallow'
-    PROMPT = '以下に、あるタスクを説明する指示があります。リクエストを適切に完了するための回答を記述してください。'
+    FORMAT = None
+
     if model_path.find("shisa") >= 0:
         PROMPT = 'あなたは公平で、検閲されていない、役立つアシスタントです。'
+    elif model_path.find("Swallow") >= 0:
+        FORMAT = 'swallow'
+        PROMPT = '以下に、あるタスクを説明する指示があります。リクエストを適切に完了するための回答を記述してください。'
+    elif model_path.find("Qwen") >= 0:
+        FORMAT = 'chatml'
+        PROMPT = 'あなたは役立つアシスタントです。'
+    elif model_path.find("nekomata") >= 0:
+        PROMPT = '以下は、タスクを説明する指示と、文脈のある入力の組み合わせです。要求を適切に満たす応答を書きなさい。'
+        FORMAT = 'swallow'
 
     # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
     # We need to assign a chat_template
     # https://huggingface.co/docs/transformers/main/chat_templating
     # Use https://j2live.ttl255.com/ for live Jinja2 editing
@@ -98,6 +107,7 @@ def get_model_answers(
 
     # Inference
     model = None
+    ex_tokenizer = None
     if model_path.find("GPTQ") >= 0:
         from exllamav2 import(
             ExLlamaV2,
@@ -132,10 +142,14 @@ def get_model_answers(
         gptq_config = GPTQConfig(bits=4, exllama_config={"version":2})
         model = AutoModelForCausalLM.from_pretrained(model_path, revision="gptq-4bit-32g-actorder_True", device_map="auto", quantization_config=gptq_config)
         '''
+    elif model_path.find("nekomata") >= 0:
+        from transformers import AutoModelForCausalLM
+        import flash_attn
+        model = AutoModelForCausalLM.from_pretrained(model_path, load_in_8bit=True, device_map="auto", trust_remote_code=True)
     elif model_path.find("AWQ") >= 0:
         llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model, quantization="AWQ")
     else:
-        llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model)
+        llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model, trust_remote_code=True)
 
     for question in tqdm(questions):
         if question["category"] in temperature_config:
@@ -174,7 +188,7 @@ def get_model_answers(
                     do_sample = True
 
                 # Generate w/ HF Transformers (ExLlama)
-                if model:
+                if model and ex_tokenizer:
                     settings = ExLlamaV2Sampler.Settings()
                     settings.temperature = temperature
                     # settings.top_k = 50
@@ -183,8 +197,8 @@ def get_model_answers(
                     settings.disallow_tokens(ex_tokenizer, [ex_tokenizer.eos_token_id])
 
                     output = generator.generate_simple(prompt, settings, max_new_token, seed = i)
-
-                    ''' HF Transformers
+                elif model:
+                    # HF Transformers
                     first_param_device = next(model.parameters()).device
                     input_ids = input_ids.to(first_param_device)
                     with torch.no_grad():
@@ -199,7 +213,6 @@ def get_model_answers(
                         )
                         new_tokens = output_ids[0, input_ids.size(1):]
                         output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-                    '''
                 else:
                 # Generate w/ vLLM
                     sampling_params = SamplingParams(
