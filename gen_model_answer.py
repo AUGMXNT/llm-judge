@@ -99,9 +99,39 @@ def get_model_answers(
     # Inference
     model = None
     if model_path.find("GPTQ") >= 0:
+        from exllamav2 import(
+            ExLlamaV2,
+            ExLlamaV2Config,
+            ExLlamaV2Cache,
+            ExLlamaV2Tokenizer,
+        )
+
+        from exllamav2.generator import (
+            ExLlamaV2BaseGenerator,
+            ExLlamaV2Sampler
+        )
+
+
+        config = ExLlamaV2Config()
+        config.model_dir = model_path
+        config.prepare()
+
+        model = ExLlamaV2(config)
+        print("Loading model: " + model_path)
+
+        cache = ExLlamaV2Cache(model, lazy = True)
+        model.load_autosplit(cache)
+
+        ex_tokenizer = ExLlamaV2Tokenizer(config)
+
+        generator = ExLlamaV2BaseGenerator(model, cache, ex_tokenizer)
+        generator.warmup()
+
+        ''' HF Transformers GPTQ
         from transformers import AutoModelForCausalLM, GPTQConfig
         gptq_config = GPTQConfig(bits=4, exllama_config={"version":2})
         model = AutoModelForCausalLM.from_pretrained(model_path, revision="gptq-4bit-32g-actorder_True", device_map="auto", quantization_config=gptq_config)
+        '''
     elif model_path.find("AWQ") >= 0:
         llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model, quantization="AWQ")
     else:
@@ -145,6 +175,16 @@ def get_model_answers(
 
                 # Generate w/ HF Transformers (ExLlama)
                 if model:
+                    settings = ExLlamaV2Sampler.Settings()
+                    settings.temperature = temperature
+                    # settings.top_k = 50
+                    settings.top_p = top_p
+                    settings.token_repetition_penalty = repetition_penalty
+                    settings.disallow_tokens(ex_tokenizer, [ex_tokenizer.eos_token_id])
+
+                    output = generator.generate_simple(prompt, settings, max_new_token, seed = i)
+
+                    ''' HF Transformers
                     first_param_device = next(model.parameters()).device
                     input_ids = input_ids.to(first_param_device)
                     with torch.no_grad():
@@ -159,6 +199,7 @@ def get_model_answers(
                         )
                         new_tokens = output_ids[0, input_ids.size(1):]
                         output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                    '''
                 else:
                 # Generate w/ vLLM
                     sampling_params = SamplingParams(
