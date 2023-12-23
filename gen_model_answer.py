@@ -86,8 +86,11 @@ def get_model_answers(
         FORMAT = 'chatml'
         PROMPT = 'あなたは役立つアシスタントです。'
     elif model_path.find("nekomata") >= 0:
-        PROMPT = '以下は、タスクを説明する指示と、文脈のある入力の組み合わせです。要求を適切に満たす応答を書きなさい。'
-        FORMAT = 'swallow'
+        PROMPT = '以下に、あるタスクを説明する指示があります。リクエストを適切に完了するための回答を記述してください。'
+        FORMAT = 'nekomata'
+    elif model_path.find("Xwin") >= 0:
+        PROMPT = 'あなたは役立つアシスタントです。'
+        FORMAT = 'vicuna'
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
@@ -99,8 +102,12 @@ def get_model_answers(
 	        tokenizer.chat_template = "{%- for idx in range(0, messages|length) -%}\n{%- if messages[idx]['role'] == 'user' -%}\n{%- if idx > 1 -%}\n{{- bos_token + '[INST] ' + messages[idx]['content'] + ' [/INST]' -}}\n{%- else -%}\n{{- messages[idx]['content'] + ' [/INST]' -}}\n{%- endif -%}\n{% elif messages[idx]['role'] == 'system' %}\n{{- '[INST] <<SYS>>\\n' + messages[idx]['content'] + '\\n<</SYS>>\\n\\n' -}}\n{%- elif messages[idx]['role'] == 'assistant' -%}\n{{- ' '  + messages[idx]['content'] + ' ' + eos_token -}}\n{% endif %}\n{% endfor %}\n"
         elif FORMAT == 'swallow':
             tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] + '\n\n' }}{% elif message['role'] == 'user' %}{{'### 指示:\n' + message['content'] + '\n\n'}}{% elif message['role'] == 'assistant' %}{{'### 応答:\n' + message['content'] + '\n\n'}}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '### 応答:' }}{% endif %}"
+        elif FORMAT == 'nekomata':
+            tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] + '\n\n' }}{% elif message['role'] == 'user' %}{{'### 指示:\n' + message['content'] + '\n\n'}}{% elif message['role'] == 'assistant' %}{{'### 応答:\n' + message['content'] + '\n\n'}}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '### 応答:\n' }}{% endif %}"
         elif FORMAT == 'tess':
 	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{message['role'].upper() + ': ' + message['content'] + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT: ' }}{% endif %}"
+        elif FORMAT == 'vicuna':
+            tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] + ' ' }}{% elif message['role'] == 'user' %}{{'USER:\n' + message['content'] + ' '}}{% elif message['role'] == 'assistant' %}{{' ASISTANT:\n' + message['content'] + ' '}}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT: ' }}{% endif %}"
         else:
 	        # default to chatml
 	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
@@ -161,12 +168,12 @@ def get_model_answers(
         # print(question['category'])
         # print(temperature)
 
-        chat = []
-        chat.append({'role': 'system', 'content': PROMPT})
-
         choices = []
         for i in range(num_choices):
             torch.manual_seed(i)
+
+            chat = []
+            chat.append({'role': 'system', 'content': PROMPT})
 
             turns = []
             for j in range(len(question["turns"])):
@@ -175,6 +182,7 @@ def get_model_answers(
 
                 qs = question["turns"][j]
                 chat.append({'role': 'user', 'content': qs})
+
                 prompt = tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
 
                 if model:
@@ -201,15 +209,22 @@ def get_model_answers(
                     # HF Transformers
                     first_param_device = next(model.parameters()).device
                     input_ids = input_ids.to(first_param_device)
+
+                    if not tokenizer.pad_token_id:
+                        tokenizer.pad_token_id = tokenizer.eos_token_id
+
                     with torch.no_grad():
                         output_ids = model.generate(
                             input_ids,
-                            pad_token_id=tokenizer.eos_token_id,
                             max_new_tokens=max_new_token,
                             temperature=temperature,
                             top_p=top_p,
                             repetition_penalty=repetition_penalty,
                             do_sample=do_sample,
+
+                            pad_token_id=tokenizer.pad_token_id,
+                            bos_token_id=tokenizer.bos_token_id,
+                            eos_token_id=tokenizer.eos_token_id,
                         )
                         new_tokens = output_ids[0, input_ids.size(1):]
                         output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
