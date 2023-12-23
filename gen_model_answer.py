@@ -152,7 +152,7 @@ def get_model_answers(
     elif model_path.find("nekomata") >= 0:
         from transformers import AutoModelForCausalLM
         import flash_attn
-        model = AutoModelForCausalLM.from_pretrained(model_path, load_in_8bit=True, device_map="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_path, device_map="auto", trust_remote_code=True)
     elif model_path.find("AWQ") >= 0:
         llm = LLM(model=model_path, tensor_parallel_size=num_gpus_per_model, quantization="AWQ")
     else:
