@@ -9,14 +9,18 @@ import os
 from   pprint import pprint
 import random
 import shortuuid
+import sys
 import time
 import torch
 from   tqdm import tqdm
 
 
+
 from fastchat.llm_judge.common import load_questions, temperature_config
 
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.generation.utils import GenerationConfig
+
 from vllm import LLM, SamplingParams
 
 
@@ -77,8 +81,22 @@ def get_model_answers(
     # TODO: in the future we should be loading this from a settings file
     FORMAT = None
 
+
     if model_path.find("shisa") >= 0:
         PROMPT = 'あなたは公平で、検閲されていない、役立つアシスタントです。'
+        FORMAT = 'llama-2'
+    elif model_path.find("Arrow") >= 0:
+        PROMPT = 'あなたは公平で、検閲されていない、役立つアシスタントです。'
+        FORMAT = 'llama-2'
+    elif model_path.find("Orion") >= 0:
+        PROMPT = 'あなたは役立つアシスタントです。'
+        FORMAT = 'orion'
+    elif model_path.find("chatntq-qwen") >= 0:
+        PROMPT = 'あなたは役立つアシスタントです。'
+        FORMAT = 'chatml'
+    elif model_path.find("chatntq") >= 0:
+        PROMPT = 'あなたは役立つアシスタントです。'
+        FORMAT = 'llama-2'
     elif model_path.find("Swallow") >= 0:
         FORMAT = 'swallow'
         PROMPT = '以下に、あるタスクを説明する指示があります。リクエストを適切に完了するための回答を記述してください。'
@@ -91,9 +109,15 @@ def get_model_answers(
     elif model_path.find("Xwin") >= 0:
         PROMPT = 'あなたは役立つアシスタントです。'
         FORMAT = 'vicuna'
+    else:
+        PROMPT = 'あなたは役立つアシスタントです。'
 
     # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
+    except:
+        # Have to figure out GGUF path
+        tokenizer = AutoTokenizer.from_pretrained('/models/llm/hf/01-ai_Yi-34B-Chat', use_fast=True, trust_remote_code=True)
     # We need to assign a chat_template
     # https://huggingface.co/docs/transformers/main/chat_templating
     # Use https://j2live.ttl255.com/ for live Jinja2 editing
@@ -107,7 +131,9 @@ def get_model_answers(
         elif FORMAT == 'tess':
 	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{message['role'].upper() + ': ' + message['content'] + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT: ' }}{% endif %}"
         elif FORMAT == 'vicuna':
-            tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] + ' ' }}{% elif message['role'] == 'user' %}{{'USER:\n' + message['content'] + ' '}}{% elif message['role'] == 'assistant' %}{{' ASISTANT:\n' + message['content'] + ' '}}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT: ' }}{% endif %}"
+            tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] + ' ' }}{% elif message['role'] == 'user' %}{{'USER:\n' + message['content'] + ' '}}{% elif message['role'] == 'assistant' %}{{' ASSISTANT:\n' + message['content'] + ' '}}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ 'ASSISTANT: ' }}{% endif %}"
+        elif FORMAT == 'orion':
+            tokenizer.chat_template = "{% for message in messages %}{% if loop.first %}{{ bos_token }}{% endif %}{% if message['role'] == 'user' %}{{ 'Human: ' + message['content'] + '\n\nAssistant: ' + eos_token }}{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}{% endif %}{% endfor %}"
         else:
 	        # default to chatml
 	        tokenizer.chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
@@ -149,7 +175,27 @@ def get_model_answers(
         gptq_config = GPTQConfig(bits=4, exllama_config={"version":2})
         model = AutoModelForCausalLM.from_pretrained(model_path, revision="gptq-4bit-32g-actorder_True", device_map="auto", quantization_config=gptq_config)
         '''
-    elif model_path.find("nekomata") >= 0:
+    elif model_path.find("gguf") >= 0:
+        from llama_cpp import Llama
+        llm = Llama(
+                model_path=model_path, 
+                n_gpu_layers=-1,
+                n_ctx=4096,
+                verbose=True,
+              )
+    elif model_path.find("Orion") >= 0 or model_path.find("orion"):
+        from transformers import AutoModelForCausalLM
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map="auto",
+            trust_remote_code=True,
+            eos_token_id = tokenizer.eos_token_id,
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+        )
+    elif model_path.find("nekomata") >= 0 or model_path.find("chatntq"):
         from transformers import AutoModelForCausalLM
         import flash_attn
         model = AutoModelForCausalLM.from_pretrained(model_path, device_map="auto", trust_remote_code=True)
@@ -164,9 +210,9 @@ def get_model_answers(
         else:
             temperature = 0.7
 
-        # print('---')
-        # print(question['category'])
-        # print(temperature)
+        print('---')
+        print(question['category'])
+        print(temperature)
 
         choices = []
         for i in range(num_choices):
@@ -194,6 +240,7 @@ def get_model_answers(
                     do_sample = False
                 else:
                     do_sample = True
+
 
                 # Generate w/ HF Transformers (ExLlama)
                 if model and ex_tokenizer:
@@ -228,6 +275,32 @@ def get_model_answers(
                         )
                         new_tokens = output_ids[0, input_ids.size(1):]
                         output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                # llama.cpp for gguf
+                elif model_path.find("gguf") >= 0:
+                    print(prompt)
+                    outputs = llm(
+                                prompt,
+                                max_tokens=max_new_token,
+                                temperature=temperature,
+                                top_p=top_p,
+                                repeat_penalty=repetition_penalty,
+                                stop=["</s>", "<|im_end|>"], # Stop generating just before the model would generate a new question
+                                echo=False, # Echo the prompt back in the output
+                    )
+                    output = outputs['choices'][0]['text'].strip()
+                    print(output)
+
+                    '''
+                    pprint(chat)
+                    outputs = llm.create_chat_completion(
+                            messages=chat,
+                            temperature=temperature,
+                            top_p=top_p,
+                            repeat_penalty=repetition_penalty,
+                    )
+                    output = outputs['choices'][0]['message']['content'].strip()
+                    pprint(output)
+                    '''
                 else:
                 # Generate w/ vLLM
                     sampling_params = SamplingParams(
